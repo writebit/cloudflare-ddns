@@ -90,6 +90,7 @@ fn daemonize() {
         let dev_null = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
         if dev_null != -1 {
             libc::dup2(dev_null, libc::STDIN_FILENO);
+            libc::dup2(dev_null, libc::STDOUT_FILENO);
             if dev_null > 2 {
                 libc::close(dev_null);
             }
