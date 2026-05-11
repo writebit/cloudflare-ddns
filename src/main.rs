@@ -140,7 +140,7 @@ fn get_ipv4() -> Option<Ipv4Addr> {
         let attr_len = u16::from_be_bytes([buf[pos + 2], buf[pos + 3]]) as usize;
         let attr_value_start = pos + 4;
 
-        if attr_type == 0x0020 && attr_len >= 8 {
+        if attr_type == 0x0020 && attr_len >= 8 && attr_value_start + 8 <= n {
             let family = buf[attr_value_start + 1];
             if family == 0x01 {
                 let xored = [
@@ -153,7 +153,7 @@ fn get_ipv4() -> Option<Ipv4Addr> {
             }
         }
 
-        if attr_type == 0x0001 && attr_len >= 8 {
+        if attr_type == 0x0001 && attr_len >= 8 && attr_value_start + 8 <= n {
             let family = buf[attr_value_start + 1];
             if family == 0x01 {
                 return Some(Ipv4Addr::new(
@@ -179,16 +179,18 @@ fn cf_result<T>(resp: CfResponse<T>) -> Result<T, String> {
     resp.result.ok_or_else(|| "Cloudflare API returned null result".to_string())
 }
 
-fn cf_client(api_token: &str) -> reqwest::Client {
+fn cf_client(api_token: &str) -> Result<reqwest::Client, String> {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
         reqwest::header::AUTHORIZATION,
-        format!("Bearer {api_token}").parse().unwrap(),
+        format!("Bearer {api_token}")
+            .parse()
+            .map_err(|_| "API token contains invalid characters".to_string())?,
     );
     reqwest::Client::builder()
         .default_headers(headers)
         .build()
-        .unwrap()
+        .map_err(|e| format!("failed to build HTTP client: {e}"))
 }
 
 async fn list_dns_records(
@@ -368,15 +370,25 @@ fn main() {
         daemonize();
     }
 
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .unwrap()
-        .block_on(run(args));
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("[error]   failed to start async runtime: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    runtime.block_on(run(args));
 }
 
 async fn run(args: Args) {
-    let client = cf_client(&args.api_token);
+    let client = cf_client(&args.api_token).unwrap_or_else(|e| {
+        eprintln!("[error]   {e}");
+        std::process::exit(1);
+    });
     let rtype = record_type_for(args.ip_type);
 
     let ip = resolve_ip(args.ip_type).unwrap_or_else(|| {
@@ -401,7 +413,7 @@ async fn run(args: Args) {
     println!("[loop]    watching for IP changes every 1s ...");
 
     loop {
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_secs(10)).await;
 
         let Some(new_ip) = resolve_ip(args.ip_type) else {
             continue;
